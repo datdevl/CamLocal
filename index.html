@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#05080f" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Android Camera Hub – Biến điện thoại thành camera</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="manifest" href="manifest.json" />
+</head>
+<body class="home">
+  <div class="bg-glow"></div>
+  <div class="container">
+    <header class="hero">
+      <div class="logo">📹</div>
+      <h1>Android Camera Hub</h1>
+      <p class="tagline">Biến những chiếc Android dư thành camera giám sát realtime.<br>Nhiều thiết bị → nhiều camera hiển thị cùng lúc.</p>
+    </header>
+
+    <div class="card room-card">
+      <label for="roomId">Mã phòng (Room ID)</label>
+      <input type="text" id="roomId" placeholder="ví dụ: nha-toi-2024" autocomplete="off" spellcheck="false" />
+      <p class="hint">Cùng một mã phòng để các camera kết nối với màn hình xem.</p>
+    </div>
+
+    <div class="actions">
+      <a href="#" id="btnViewer" class="btn btn-primary">
+        <span class="icon">🖥️</span>
+        <span>Xem camera (Viewer)</span>
+      </a>
+      <a href="#" id="btnCamera" class="btn btn-accent">
+        <span class="icon">📱</span>
+        <span>Biến thành Camera</span>
+      </a>
+    </div>
+
+    <div class="info-box">
+      <h3>Hướng dẫn nhanh</h3>
+      <ol>
+        <li>Nhập cùng một <strong>Room ID</strong> trên tất cả thiết bị.</li>
+        <li>Trên máy tính / điện thoại chính → chọn <strong>Xem camera</strong>.</li>
+        <li>Trên mỗi Android dư → chọn <strong>Biến thành Camera</strong>, cho phép camera.</li>
+        <li>Giữ màn hình sáng (Wake Lock) để stream ổn định. Tắt màn hình hoàn toàn sẽ bị trình duyệt tạm dừng.</li>
+      </ol>
+    </div>
+
+    <footer>
+      <p>WebRTC + PeerJS · Không lưu video · Peer-to-peer</p>
+    </footer>
+  </div>
+
+  <script>
+    const roomInput = document.getElementById('roomId');
+    const saved = localStorage.getItem('cameraRoomId') || '';
+    roomInput.value = saved;
+
+    function go(mode) {
+      const room = roomInput.value.trim().toLowerCase().replace(/\s+/g, '-');
+      if (!room) {
+        alert('Vui lòng nhập Mã phòng');
+        roomInput.focus();
+        return;
+      }
+      localStorage.setItem('cameraRoomId', room);
+      window.location.href = mode === 'viewer' ? `viewer.html?room=${encodeURIComponent(room)}` : `camera.html?room=${encodeURIComponent(room)}`;
+    }
+
+    document.getElementById('btnViewer').addEventListener('click', e => { e.preventDefault(); go('viewer'); });
+    document.getElementById('btnCamera').addEventListener('click', e => { e.preventDefault(); go('camera'); });
+  </script>
+</body>
+</html>

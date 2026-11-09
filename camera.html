@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#05080f" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>Camera Mode – Android Camera Hub</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body class="camera-page">
+  <div class="bg-glow"></div>
+  <header class="topbar">
+    <a href="index.html" class="back">←</a>
+    <div class="title">
+      <h1>Camera Mode</h1>
+      <span class="room-badge" id="roomBadge">—</span>
+    </div>
+  </header>
+
+  <main class="camera-main">
+    <div class="preview-wrap">
+      <video id="localVideo" autoplay playsinline muted></video>
+      <div class="overlay-info">
+        <span id="camNameDisplay">Camera</span>
+        <span id="connStatus" class="badge">Chưa kết nối</span>
+      </div>
+    </div>
+
+    <div class="controls card">
+      <div class="form-group">
+        <label for="camName">Tên camera</label>
+        <input type="text" id="camName" placeholder="VD: Phòng khách, Cổng trước..." maxlength="30" />
+      </div>
+
+      <div class="form-group">
+        <label>Camera</label>
+        <select id="cameraSelect"></select>
+      </div>
+
+      <div class="btn-row">
+        <button id="btnStart" class="btn btn-accent">Bắt đầu stream</button>
+        <button id="btnStop" class="btn btn-danger" disabled>Dừng</button>
+      </div>
+
+      <div class="wake-lock-status">
+        <label class="switch">
+          <input type="checkbox" id="wakeLockToggle" checked />
+          <span class="slider"></span>
+        </label>
+        <span>Giữ màn hình sáng (Wake Lock)</span>
+      </div>
+
+      <p class="note">⚠️ Trình duyệt sẽ tạm dừng camera khi tắt màn hình hoặc chuyển app. Hãy giữ màn hình sáng hoặc cắm sạc + “Keep screen on”.</p>
+    </div>
+  </main>
+
+  <script src="js/camera.js"></script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#05080f" />
+  <title>Viewer – Android Camera Hub</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body class="viewer-page">
+  <div class="bg-grid"></div>
+  <div class="bg-vignette"></div>
+
+  <header class="topbar">
+    <a href="index.html" class="back" title="Về trang chủ">←</a>
+    <div class="title">
+      <h1>CAMERA HUB</h1>
+      <span class="room-badge" id="roomBadge">—</span>
+    </div>
+    <div class="status" id="status">
+      <span class="dot"></span>
+      <span id="statusText">Đang kết nối...</span>
+    </div>
+  </header>
+
+  <main class="viewer-main">
+    <div id="emptyState" class="empty-state">
+      <div class="empty-ring">
+        <div class="empty-icon">📡</div>
+      </div>
+      <h2>Chờ camera kết nối</h2>
+      <p>Mở trang <strong>Camera</strong> trên các điện thoại Android<br>và dùng cùng Room ID.</p>
+      <p class="mono" id="viewerIdDisplay"></p>
+    </div>
+
+    <div id="cameraGrid" class="camera-grid cams-0"></div>
+  </main>
+
+  <!-- Fullscreen / Enlarge overlay -->
+  <div id="fsOverlay" class="fs-overlay" hidden>
+    <div class="fs-backdrop"></div>
+    <div class="fs-content">
+      <video id="fsVideo" autoplay playsinline muted></video>
+      <div class="fs-bar">
+        <span id="fsName">Camera</span>
+        <div class="fs-actions">
+          <span class="live-pill">● LIVE</span>
+          <button id="fsClose" class="fs-close" title="Đóng">✕</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="floating-info">
+    <span id="cameraCount">0 camera</span>
+  </div>
+
+  <script src="js/viewer.js"></script>
+</body>
+</html>
