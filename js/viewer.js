@@ -19,6 +19,30 @@
 
   const viewerPeerId = 'viewer-' + room;
 
+  // Better ICE with free TURN (helps a lot with black video)
+  const ICE_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
+    ]
+  };
+
   let peer = null;
   const activeCalls = new Map();
   let creating = false;
@@ -80,7 +104,7 @@
 
     stream.getTracks().forEach(t => {
       t.enabled = true;
-      console.log('[Viewer] track', t.kind, t.readyState, t.enabled, t.muted);
+      console.log('[Viewer] track', t.kind, 'readyState=', t.readyState, 'enabled=', t.enabled, 'muted=', t.muted);
     });
 
     if (activeCalls.has(remotePeerId)) {
@@ -105,7 +129,7 @@
     video.setAttribute('playsinline', '');
     video.setAttribute('webkit-playsinline', '');
     video.setAttribute('muted', '');
-    video.style.background = '#000';
+    video.style.cssText = 'width:100%;height:100%;object-fit:cover;background:#000;';
     video.srcObject = stream;
 
     const frame = document.createElement('div');
@@ -119,11 +143,10 @@
     enlargeHint.className = 'enlarge-hint';
     enlargeHint.innerHTML = '<span>🔍 Phóng to</span>';
 
-    // Fallback "no signal" overlay
     const noSignal = document.createElement('div');
     noSignal.className = 'no-signal';
     noSignal.innerHTML = '<div>Đang nhận tín hiệu...</div>';
-    noSignal.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000;color:#94a3b8;font-size:0.9rem;z-index:1;';
+    noSignal.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0a0a0a;color:#94a3b8;font-size:0.9rem;z-index:1;text-align:center;padding:1rem;';
 
     card.appendChild(video);
     card.appendChild(noSignal);
@@ -137,7 +160,6 @@
     updateGridClass();
     forcePlay(video);
 
-    // Hide "no signal" when we get real frames
     const checkFrames = () => {
       if (video.videoWidth > 0 && video.videoHeight > 0) {
         noSignal.style.display = 'none';
@@ -146,26 +168,23 @@
       return false;
     };
 
-    video.addEventListener('playing', () => {
-      noSignal.style.display = 'none';
-    });
+    video.addEventListener('playing', () => { noSignal.style.display = 'none'; });
+    video.addEventListener('loadeddata', () => { if (checkFrames()) noSignal.style.display = 'none'; });
 
-    // Aggressive re-attach if still black
     let tries = 0;
     const reattachInterval = setInterval(() => {
       tries++;
-      if (checkFrames() || tries > 15) {
+      if (checkFrames() || tries > 12) {
         clearInterval(reattachInterval);
         if (!checkFrames()) {
-          noSignal.innerHTML = '<div>Không có hình ảnh<br><small>Thử tắt/bật lại camera</small></div>';
+          noSignal.innerHTML = '<div>Không có hình ảnh<br><small>Thử cùng WiFi hoặc tắt/bật lại camera</small></div>';
         }
         return;
       }
-      // re-set srcObject
       video.srcObject = null;
       video.srcObject = stream;
       forcePlay(video);
-    }, 1500);
+    }, 1800);
 
     const open = () => openFullscreen(entry);
     card.addEventListener('click', open);
@@ -214,15 +233,7 @@
 
     peer = new Peer(viewerPeerId, {
       debug: 0,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' },
-          { urls: 'stun:stun4.l.google.com:19302' }
-        ]
-      }
+      config: ICE_CONFIG
     });
 
     peer.on('open', id => {
@@ -253,11 +264,11 @@
 
       if (err.type === 'unavailable-id') {
         retryCount++;
-        if (retryCount <= 8) {
+        if (retryCount <= 6) {
           setStatus(false, 'Room đang bị giữ – đang thử lại... (' + retryCount + ')');
-          retryTimer = setTimeout(() => createPeer(), 2500);
+          retryTimer = setTimeout(() => createPeer(), 3000);
         } else {
-          setStatus(false, 'Room bị chiếm lâu. Hãy đổi Room ID khác');
+          setStatus(false, 'Room bị chiếm. Hãy đổi Room ID khác (vd: test' + Date.now().toString().slice(-4) + ')');
         }
       } else if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error') {
         setStatus(false, 'Mất kết nối signaling – đang thử lại...');
@@ -274,9 +285,7 @@
       retryTimer = setTimeout(() => createPeer(), 2500);
     });
 
-    peer.on('close', () => {
-      console.log('[Viewer] peer closed');
-    });
+    peer.on('close', () => console.log('[Viewer] peer closed'));
   }
 
   window.addEventListener('beforeunload', destroyPeer);
