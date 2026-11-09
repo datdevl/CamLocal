@@ -279,6 +279,7 @@
       }
     });
 
+    
     peer.on('disconnected', () => {
       console.warn('[Viewer] disconnected');
       setStatus(false, 'Mất kết nối signaling – đang thử lại...');
