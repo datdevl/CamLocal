@@ -34,6 +34,29 @@
 
   const viewerPeerId = 'viewer-' + room;
 
+  const ICE_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
+    ]
+  };
+
   function setConnStatus(text, state) {
     connStatus.textContent = text;
     connStatus.className = 'badge ' + (state || '');
@@ -114,6 +137,9 @@
         currentCall = null;
       }
 
+      // Ensure tracks are enabled before sending
+      localStream.getTracks().forEach(t => { t.enabled = true; });
+
       currentCall = peer.call(viewerPeerId, localStream, {
         metadata: { name: currentName }
       });
@@ -152,15 +178,7 @@
 
     peer = new Peer({
       debug: 0,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' },
-          { urls: 'stun:stun4.l.google.com:19302' }
-        ]
-      }
+      config: ICE_CONFIG
     });
 
     peer.on('open', id => {
@@ -218,6 +236,7 @@
     try {
       setConnStatus('Đang mở camera...', 'connecting');
       localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      localStream.getTracks().forEach(t => t.enabled = true);
       localVideo.srcObject = localStream;
       await localVideo.play().catch(() => {});
 
