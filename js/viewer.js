@@ -17,15 +17,17 @@
 
   roomBadge.textContent = room;
 
-  // Fixed ID so cameras know where to call
-  const viewerPeerId = `viewer-${room}`;
+  // Fixed ID so cameras can find the viewer
+  const viewerPeerId = 'viewer-' + room;
 
   let peer = null;
-  const activeCalls = new Map(); // peerId -> { video, card, stream, name }
+  const activeCalls = new Map();
+  let creating = false;
+  let retryTimer = null;
 
   function setStatus(connected, text) {
     statusText.textContent = text;
-    statusEl.classList.toggle('connected', connected);
+    statusEl.classList.toggle('connected', !!connected);
   }
 
   function updateGridClass() {
@@ -37,32 +39,21 @@
 
   function forcePlay(video) {
     if (!video) return;
-    const p = video.play();
-    if (p && typeof p.catch === 'function') {
-      p.catch(() => {
-        // Autoplay blocked – wait for user gesture
-        const resume = () => {
-          video.play().catch(() => {});
-          document.removeEventListener('click', resume);
-          document.removeEventListener('touchstart', resume);
-        };
-        document.addEventListener('click', resume, { once: true });
-        document.addEventListener('touchstart', resume, { once: true });
-      });
-    }
+    const tryPlay = () => {
+      const p = video.play();
+      if (p && p.catch) p.catch(() => {});
+    };
+    tryPlay();
+    video.addEventListener('loadedmetadata', tryPlay, { once: true });
+    video.addEventListener('canplay', tryPlay, { once: true });
   }
 
   function openFullscreen(entry) {
     if (!entry || !entry.stream) return;
-
     fsVideo.srcObject = entry.stream;
     fsName.textContent = entry.name || 'Camera';
     fsOverlay.hidden = false;
-
-    requestAnimationFrame(() => {
-      fsOverlay.classList.add('open');
-    });
-
+    requestAnimationFrame(() => fsOverlay.classList.add('open'));
     forcePlay(fsVideo);
     document.body.style.overflow = 'hidden';
   }
@@ -73,34 +64,30 @@
       fsOverlay.hidden = true;
       fsVideo.srcObject = null;
       document.body.style.overflow = '';
-    }, 320);
+    }, 300);
   }
 
   fsClose.addEventListener('click', closeFullscreen);
   fsOverlay.querySelector('.fs-backdrop').addEventListener('click', closeFullscreen);
-  document.addEventListener('keydown', (e) => {
+  document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && fsOverlay.classList.contains('open')) closeFullscreen();
   });
 
   function addCamera(remotePeerId, stream, name) {
+    // Always ensure tracks are live
+    stream.getTracks().forEach(t => { t.enabled = true; });
+
     if (activeCalls.has(remotePeerId)) {
-      // Update existing if stream changed
-      const existing = activeCalls.get(remotePeerId);
-      existing.stream = stream;
-      existing.video.srcObject = stream;
-      forcePlay(existing.video);
+      const old = activeCalls.get(remotePeerId);
+      old.stream = stream;
+      old.video.srcObject = stream;
+      forcePlay(old.video);
       return;
     }
-
-    // Ensure tracks are enabled
-    stream.getVideoTracks().forEach(t => {
-      t.enabled = true;
-    });
 
     const card = document.createElement('div');
     card.className = 'camera-card';
     card.dataset.peer = remotePeerId;
-    card.setAttribute('role', 'button');
     card.tabIndex = 0;
 
     const video = document.createElement('video');
@@ -111,19 +98,12 @@
     video.setAttribute('webkit-playsinline', '');
     video.srcObject = stream;
 
-    // Force play when metadata is ready
-    video.addEventListener('loadedmetadata', () => forcePlay(video));
-    video.addEventListener('canplay', () => forcePlay(video));
-
     const frame = document.createElement('div');
     frame.className = 'cam-frame';
 
     const label = document.createElement('div');
     label.className = 'label';
-    label.innerHTML = `
-      <span class="cam-name">${escapeHtml(name || remotePeerId.slice(0, 10))}</span>
-      <span class="live">LIVE</span>
-    `;
+    label.innerHTML = `<span class="cam-name">${escapeHtml(name || 'Camera')}</span><span class="live">LIVE</span>`;
 
     const enlargeHint = document.createElement('div');
     enlargeHint.className = 'enlarge-hint';
@@ -138,24 +118,25 @@
     const entry = { video, card, stream, name: name || 'Camera' };
     activeCalls.set(remotePeerId, entry);
     updateGridClass();
-
     forcePlay(video);
 
-    // Click / tap to fullscreen
+    // If after 2s still no picture, try re-attach
+    setTimeout(() => {
+      if (video.videoWidth === 0 && stream.active) {
+        video.srcObject = null;
+        video.srcObject = stream;
+        forcePlay(video);
+      }
+    }, 2000);
+
     const open = () => openFullscreen(entry);
     card.addEventListener('click', open);
-    card.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        open();
-      }
+    card.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
     });
 
-    // Watch for track ended (camera closed)
     stream.getVideoTracks().forEach(track => {
-      track.addEventListener('ended', () => {
-        removeCamera(remotePeerId);
-      });
+      track.onended = () => removeCamera(remotePeerId);
     });
   }
 
@@ -166,120 +147,101 @@
     entry.card.remove();
     activeCalls.delete(remotePeerId);
     updateGridClass();
-
-    if (fsVideo.srcObject === entry.stream) {
-      closeFullscreen();
-    }
+    if (fsVideo.srcObject === entry.stream) closeFullscreen();
   }
 
   function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
   }
 
-  let retryCount = 0;
-  const MAX_RETRIES = 5;
+  function destroyPeer() {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    if (peer) {
+      try {
+        peer.destroy();
+      } catch (_) {}
+      peer = null;
+    }
+  }
 
   function createPeer() {
-    if (peer && !peer.destroyed) {
-      try { peer.destroy(); } catch (_) {}
-    }
+    if (creating) return;
+    creating = true;
+    destroyPeer();
+
+    setStatus(false, 'Đang kết nối signaling...');
 
     peer = new Peer(viewerPeerId, {
-      debug: 1,
+      debug: 0,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' }
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' }
         ]
       }
     });
 
-    peer.on('open', (id) => {
-      console.log('Viewer peer open:', id);
-      retryCount = 0;
+    peer.on('open', id => {
+      creating = false;
+      console.log('[Viewer] open', id);
       setStatus(true, 'Sẵn sàng');
       if (viewerIdDisplay) viewerIdDisplay.textContent = 'ID: ' + id;
     });
 
-    peer.on('call', (call) => {
-      console.log('Incoming call from', call.peer, call.metadata);
+    peer.on('call', call => {
+      console.log('[Viewer] incoming call', call.peer);
+      call.answer(); // no local stream
 
-      // Answer immediately (no local stream)
-      call.answer();
-
-      call.on('stream', (remoteStream) => {
-        console.log('Got stream from', call.peer, remoteStream.getVideoTracks().length, 'video tracks');
-        const name = (call.metadata && call.metadata.name) || call.peer;
+      call.on('stream', remoteStream => {
+        console.log('[Viewer] stream received', remoteStream.getVideoTracks().length);
+        const name = (call.metadata && call.metadata.name) || 'Camera';
         addCamera(call.peer, remoteStream, name);
       });
 
-      call.on('close', () => {
-        console.log('Call closed', call.peer);
-        removeCamera(call.peer);
-      });
-
-      call.on('error', (err) => {
-        console.error('Call error', err);
-        removeCamera(call.peer);
-      });
+      call.on('close', () => removeCamera(call.peer));
+      call.on('error', () => removeCamera(call.peer));
     });
 
-    peer.on('error', (err) => {
-      console.error('Peer error', err.type, err);
+    peer.on('error', err => {
+      creating = false;
+      console.warn('[Viewer] error', err.type);
 
       if (err.type === 'unavailable-id') {
-        // Previous session still holds the ID on PeerJS cloud
-        retryCount++;
-        if (retryCount <= MAX_RETRIES) {
-          setStatus(false, `Room đang bị giữ, thử lại (${retryCount}/${MAX_RETRIES})...`);
-          setTimeout(() => {
-            createPeer();
-          }, 1500 + retryCount * 800);
-        } else {
-          setStatus(false, 'Room bị chiếm. Hãy đổi Room ID hoặc đợi 30s rồi F5');
-        }
-      } else if (err.type === 'network' || err.type === 'server-error') {
-        setStatus(false, 'Lỗi mạng, đang thử lại...');
-        setTimeout(() => createPeer(), 2500);
+        setStatus(false, 'Room đang bị giữ – đang thử lại...');
+        // PeerJS cloud keeps the ID for a while. Wait then force recreate.
+        retryTimer = setTimeout(() => createPeer(), 2200);
+      } else if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error') {
+        setStatus(false, 'Mất kết nối signaling – đang thử lại...');
+        retryTimer = setTimeout(() => createPeer(), 2500);
       } else {
-        setStatus(false, 'Lỗi: ' + (err.type || err.message));
+        setStatus(false, 'Lỗi: ' + (err.type || 'unknown'));
+        retryTimer = setTimeout(() => createPeer(), 4000);
       }
     });
 
     peer.on('disconnected', () => {
-      setStatus(false, 'Mất kết nối signaling...');
-      // PeerJS will try to reconnect automatically in many cases
-      setTimeout(() => {
-        if (peer && peer.disconnected && !peer.destroyed) {
-          try { peer.reconnect(); } catch (_) {
-            createPeer();
-          }
-        }
-      }, 2000);
+      console.warn('[Viewer] disconnected');
+      setStatus(false, 'Mất kết nối signaling – đang thử lại...');
+      // Don't call peer.reconnect() – it is unreliable on the public cloud.
+      // Fully destroy and recreate instead.
+      retryTimer = setTimeout(() => createPeer(), 2000);
     });
 
     peer.on('close', () => {
-      console.log('Peer closed');
+      console.log('[Viewer] peer closed');
     });
   }
 
-  // Clean up on leave
-  window.addEventListener('beforeunload', () => {
-    if (peer && !peer.destroyed) {
-      try { peer.destroy(); } catch (_) {}
-    }
-  });
+  // Clean destroy when leaving
+  window.addEventListener('beforeunload', destroyPeer);
+  window.addEventListener('pagehide', destroyPeer);
 
-  // Also destroy on pagehide (better for mobile)
-  window.addEventListener('pagehide', () => {
-    if (peer && !peer.destroyed) {
-      try { peer.destroy(); } catch (_) {}
-    }
-  });
-
+  // Start
   createPeer();
   updateGridClass();
 })();
