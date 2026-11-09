@@ -14,7 +14,6 @@
 
   roomBadge.textContent = room;
 
-  // Restore name
   const savedName = localStorage.getItem('camName') || '';
   camNameInput.value = savedName;
   camNameDisplay.textContent = savedName || 'Camera';
@@ -30,6 +29,8 @@
   let currentCall = null;
   let wakeLock = null;
   let devices = [];
+  let reconnectTimer = null;
+  let isIntentionalStop = false;
 
   const viewerPeerId = `viewer-${room}`;
 
@@ -41,8 +42,10 @@
   async function requestWakeLock() {
     if (!('wakeLock' in navigator) || !wakeLockToggle.checked) return;
     try {
+      if (wakeLock) {
+        try { await wakeLock.release(); } catch (_) {}
+      }
       wakeLock = await navigator.wakeLock.request('screen');
-      console.log('Wake Lock active');
       wakeLock.addEventListener('release', () => {
         console.log('Wake Lock released');
       });
@@ -58,7 +61,6 @@
     }
   }
 
-  // Re-acquire wake lock when page becomes visible again
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'visible' && localStream && wakeLockToggle.checked) {
       await requestWakeLock();
@@ -75,7 +77,7 @@
 
   async function loadDevices() {
     try {
-      // Need permission first to get labels
+      // Request permission to get labels
       const temp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       temp.getTracks().forEach(t => t.stop());
 
@@ -97,6 +99,127 @@
     }
   }
 
+  function clearReconnectTimer() {
+    if (reconnectTimer) {
+      clearInterval(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function startReconnectLoop(name) {
+    clearReconnectTimer();
+    reconnectTimer = setInterval(() => {
+      if (isIntentionalStop || !localStream) {
+        clearReconnectTimer();
+        return;
+      }
+      // If no open call, try again
+      if (!currentCall || !currentCall.open) {
+        console.log('Retrying call to viewer...');
+        makeCall(name);
+      }
+    }, 4000);
+  }
+
+  function makeCall(name) {
+    if (!peer || peer.destroyed || !localStream) return;
+
+    try {
+      // Close previous attempt if any
+      if (currentCall) {
+        try { currentCall.close(); } catch (_) {}
+        currentCall = null;
+      }
+
+      currentCall = peer.call(viewerPeerId, localStream, {
+        metadata: { name }
+      });
+
+      if (!currentCall) {
+        setConnStatus('Không gọi được viewer', '');
+        return;
+      }
+
+      currentCall.on('stream', () => {
+        // Viewer does not send stream back
+      });
+
+      currentCall.on('close', () => {
+        console.log('Call closed by remote');
+        if (!isIntentionalStop) {
+          setConnStatus('Mất kết nối – đang thử lại...', 'connecting');
+        }
+      });
+
+      currentCall.on('error', (err) => {
+        console.error('Call error', err);
+        if (!isIntentionalStop) {
+          setConnStatus('Lỗi kết nối – đang thử lại...', 'connecting');
+        }
+      });
+
+      // Check after a short delay
+      setTimeout(() => {
+        if (currentCall && currentCall.open) {
+          setConnStatus('Đang stream', 'connected');
+        } else if (!isIntentionalStop) {
+          setConnStatus('Chờ viewer...', 'connecting');
+        }
+      }, 1800);
+    } catch (e) {
+      console.error('makeCall error', e);
+      setConnStatus('Lỗi gọi viewer', '');
+    }
+  }
+
+  function connectToViewer(name) {
+    setConnStatus('Đang kết nối...', 'connecting');
+    isIntentionalStop = false;
+
+    if (peer && !peer.destroyed) {
+      try { peer.destroy(); } catch (_) {}
+    }
+
+    peer = new Peer({
+      debug: 1,
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' }
+        ]
+      }
+    });
+
+    peer.on('open', (id) => {
+      console.log('Camera peer open:', id);
+      makeCall(name);
+      startReconnectLoop(name);
+    });
+
+    peer.on('error', (err) => {
+      console.error('Peer error', err.type, err);
+      if (err.type === 'peer-unavailable') {
+        setConnStatus('Viewer chưa mở – đang chờ...', 'connecting');
+      } else if (err.type === 'network') {
+        setConnStatus('Lỗi mạng...', 'connecting');
+      } else {
+        setConnStatus('Lỗi: ' + (err.type || ''), '');
+      }
+    });
+
+    peer.on('disconnected', () => {
+      if (!isIntentionalStop) {
+        setConnStatus('Mất signaling – đang thử lại...', 'connecting');
+        setTimeout(() => {
+          if (peer && peer.disconnected && !peer.destroyed) {
+            try { peer.reconnect(); } catch (_) {}
+          }
+        }, 2000);
+      }
+    });
+  }
+
   async function startStream() {
     if (localStream) return;
 
@@ -110,7 +233,7 @@
         deviceId: cameraSelect.value ? { exact: cameraSelect.value } : undefined,
         width: { ideal: 1280 },
         height: { ideal: 720 },
-        facingMode: 'environment' // prefer back camera on mobile
+        facingMode: cameraSelect.value ? undefined : 'environment'
       }
     };
 
@@ -126,7 +249,6 @@
       btnStop.disabled = false;
       cameraSelect.disabled = true;
 
-      // Connect to viewer
       connectToViewer(name);
     } catch (err) {
       console.error(err);
@@ -136,81 +258,10 @@
     }
   }
 
-  function connectToViewer(name) {
-    setConnStatus('Đang kết nối...', 'connecting');
-
-    peer = new Peer({
-      debug: 1,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-      }
-    });
-
-    peer.on('open', (id) => {
-      console.log('Camera peer open:', id);
-      // Call the viewer
-      try {
-        currentCall = peer.call(viewerPeerId, localStream, {
-          metadata: { name }
-        });
-
-        if (!currentCall) {
-          setConnStatus('Không gọi được viewer', '');
-          return;
-        }
-
-        currentCall.on('stream', () => {
-          // Viewer doesn't send stream back
-        });
-
-        currentCall.on('close', () => {
-          setConnStatus('Viewer đã ngắt', '');
-        });
-
-        currentCall.on('error', (err) => {
-          console.error('Call error', err);
-          setConnStatus('Lỗi kết nối', '');
-        });
-
-        // Give a moment then assume connected if no error
-        setTimeout(() => {
-          if (currentCall && currentCall.open) {
-            setConnStatus('Đang stream', 'connected');
-          } else {
-            setConnStatus('Chờ viewer...', 'connecting');
-          }
-        }, 1500);
-      } catch (e) {
-        console.error(e);
-        setConnStatus('Lỗi gọi viewer', '');
-      }
-    });
-
-    peer.on('error', (err) => {
-      console.error('Peer error', err);
-      if (err.type === 'peer-unavailable') {
-        setConnStatus('Viewer chưa mở – đang chờ...', 'connecting');
-        // Retry after a few seconds
-        setTimeout(() => {
-          if (localStream && peer && !peer.destroyed) {
-            try {
-              currentCall = peer.call(viewerPeerId, localStream, { metadata: { name } });
-              setTimeout(() => {
-                if (currentCall && currentCall.open) setConnStatus('Đang stream', 'connected');
-              }, 1200);
-            } catch (_) {}
-          }
-        }, 3000);
-      } else {
-        setConnStatus('Lỗi: ' + (err.type || err.message), '');
-      }
-    });
-  }
-
   function stopStream() {
+    isIntentionalStop = true;
+    clearReconnectTimer();
+
     if (currentCall) {
       try { currentCall.close(); } catch (_) {}
       currentCall = null;
@@ -235,24 +286,15 @@
   btnStart.addEventListener('click', startStream);
   btnStop.addEventListener('click', stopStream);
 
-  // Keep trying to reconnect if viewer comes online later
-  setInterval(() => {
-    if (localStream && peer && !peer.destroyed && (!currentCall || !currentCall.open)) {
-      const name = camNameInput.value.trim() || 'Camera';
-      try {
-        currentCall = peer.call(viewerPeerId, localStream, { metadata: { name } });
-        setTimeout(() => {
-          if (currentCall && currentCall.open) setConnStatus('Đang stream', 'connected');
-        }, 1000);
-      } catch (_) {}
-    }
-  }, 5000);
-
-  // Init
   loadDevices();
   setConnStatus('Sẵn sàng', '');
 
   window.addEventListener('beforeunload', () => {
+    isIntentionalStop = true;
+    stopStream();
+  });
+  window.addEventListener('pagehide', () => {
+    isIntentionalStop = true;
     stopStream();
   });
 })();

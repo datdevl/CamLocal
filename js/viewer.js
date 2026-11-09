@@ -10,7 +10,6 @@
   const cameraCountEl = document.getElementById('cameraCount');
   const viewerIdDisplay = document.getElementById('viewerIdDisplay');
 
-  // Fullscreen elements
   const fsOverlay = document.getElementById('fsOverlay');
   const fsVideo = document.getElementById('fsVideo');
   const fsName = document.getElementById('fsName');
@@ -18,6 +17,7 @@
 
   roomBadge.textContent = room;
 
+  // Fixed ID so cameras know where to call
   const viewerPeerId = `viewer-${room}`;
 
   let peer = null;
@@ -35,6 +35,23 @@
     emptyState.style.display = n === 0 ? 'flex' : 'none';
   }
 
+  function forcePlay(video) {
+    if (!video) return;
+    const p = video.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => {
+        // Autoplay blocked – wait for user gesture
+        const resume = () => {
+          video.play().catch(() => {});
+          document.removeEventListener('click', resume);
+          document.removeEventListener('touchstart', resume);
+        };
+        document.addEventListener('click', resume, { once: true });
+        document.addEventListener('touchstart', resume, { once: true });
+      });
+    }
+  }
+
   function openFullscreen(entry) {
     if (!entry || !entry.stream) return;
 
@@ -42,12 +59,11 @@
     fsName.textContent = entry.name || 'Camera';
     fsOverlay.hidden = false;
 
-    // Force reflow then animate in
     requestAnimationFrame(() => {
       fsOverlay.classList.add('open');
     });
 
-    fsVideo.play().catch(() => {});
+    forcePlay(fsVideo);
     document.body.style.overflow = 'hidden';
   }
 
@@ -67,7 +83,19 @@
   });
 
   function addCamera(remotePeerId, stream, name) {
-    if (activeCalls.has(remotePeerId)) return;
+    if (activeCalls.has(remotePeerId)) {
+      // Update existing if stream changed
+      const existing = activeCalls.get(remotePeerId);
+      existing.stream = stream;
+      existing.video.srcObject = stream;
+      forcePlay(existing.video);
+      return;
+    }
+
+    // Ensure tracks are enabled
+    stream.getVideoTracks().forEach(t => {
+      t.enabled = true;
+    });
 
     const card = document.createElement('div');
     card.className = 'camera-card';
@@ -79,9 +107,14 @@
     video.autoplay = true;
     video.playsInline = true;
     video.muted = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
     video.srcObject = stream;
 
-    // Subtle inner frame
+    // Force play when metadata is ready
+    video.addEventListener('loadedmetadata', () => forcePlay(video));
+    video.addEventListener('canplay', () => forcePlay(video));
+
     const frame = document.createElement('div');
     frame.className = 'cam-frame';
 
@@ -92,7 +125,6 @@
       <span class="live">LIVE</span>
     `;
 
-    // Click to enlarge
     const enlargeHint = document.createElement('div');
     enlargeHint.className = 'enlarge-hint';
     enlargeHint.innerHTML = '<span>🔍 Phóng to</span>';
@@ -107,7 +139,7 @@
     activeCalls.set(remotePeerId, entry);
     updateGridClass();
 
-    video.play().catch(() => {});
+    forcePlay(video);
 
     // Click / tap to fullscreen
     const open = () => openFullscreen(entry);
@@ -117,6 +149,13 @@
         e.preventDefault();
         open();
       }
+    });
+
+    // Watch for track ended (camera closed)
+    stream.getVideoTracks().forEach(track => {
+      track.addEventListener('ended', () => {
+        removeCamera(remotePeerId);
+      });
     });
   }
 
@@ -128,7 +167,6 @@
     activeCalls.delete(remotePeerId);
     updateGridClass();
 
-    // If this camera is currently fullscreen, close it
     if (fsVideo.srcObject === entry.stream) {
       closeFullscreen();
     }
@@ -140,56 +178,108 @@
     return div.innerHTML;
   }
 
-  function initPeer() {
-    setStatus(false, 'Đang kết nối...');
+  let retryCount = 0;
+  const MAX_RETRIES = 5;
+
+  function createPeer() {
+    if (peer && !peer.destroyed) {
+      try { peer.destroy(); } catch (_) {}
+    }
 
     peer = new Peer(viewerPeerId, {
       debug: 1,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' }
         ]
       }
     });
 
     peer.on('open', (id) => {
       console.log('Viewer peer open:', id);
+      retryCount = 0;
       setStatus(true, 'Sẵn sàng');
-      viewerIdDisplay.textContent = 'ID: ' + id;
+      if (viewerIdDisplay) viewerIdDisplay.textContent = 'ID: ' + id;
     });
 
     peer.on('call', (call) => {
+      console.log('Incoming call from', call.peer, call.metadata);
+
+      // Answer immediately (no local stream)
       call.answer();
 
       call.on('stream', (remoteStream) => {
+        console.log('Got stream from', call.peer, remoteStream.getVideoTracks().length, 'video tracks');
         const name = (call.metadata && call.metadata.name) || call.peer;
         addCamera(call.peer, remoteStream, name);
       });
 
-      call.on('close', () => removeCamera(call.peer));
-      call.on('error', () => removeCamera(call.peer));
+      call.on('close', () => {
+        console.log('Call closed', call.peer);
+        removeCamera(call.peer);
+      });
+
+      call.on('error', (err) => {
+        console.error('Call error', err);
+        removeCamera(call.peer);
+      });
     });
 
     peer.on('error', (err) => {
-      console.error('Peer error', err);
+      console.error('Peer error', err.type, err);
+
       if (err.type === 'unavailable-id') {
-        setStatus(false, 'Room đang được dùng');
+        // Previous session still holds the ID on PeerJS cloud
+        retryCount++;
+        if (retryCount <= MAX_RETRIES) {
+          setStatus(false, `Room đang bị giữ, thử lại (${retryCount}/${MAX_RETRIES})...`);
+          setTimeout(() => {
+            createPeer();
+          }, 1500 + retryCount * 800);
+        } else {
+          setStatus(false, 'Room bị chiếm. Hãy đổi Room ID hoặc đợi 30s rồi F5');
+        }
+      } else if (err.type === 'network' || err.type === 'server-error') {
+        setStatus(false, 'Lỗi mạng, đang thử lại...');
+        setTimeout(() => createPeer(), 2500);
       } else {
         setStatus(false, 'Lỗi: ' + (err.type || err.message));
       }
     });
 
     peer.on('disconnected', () => {
-      setStatus(false, 'Mất kết nối...');
-      try { peer.reconnect(); } catch (_) {}
+      setStatus(false, 'Mất kết nối signaling...');
+      // PeerJS will try to reconnect automatically in many cases
+      setTimeout(() => {
+        if (peer && peer.disconnected && !peer.destroyed) {
+          try { peer.reconnect(); } catch (_) {
+            createPeer();
+          }
+        }
+      }, 2000);
+    });
+
+    peer.on('close', () => {
+      console.log('Peer closed');
     });
   }
 
+  // Clean up on leave
   window.addEventListener('beforeunload', () => {
-    if (peer) peer.destroy();
+    if (peer && !peer.destroyed) {
+      try { peer.destroy(); } catch (_) {}
+    }
   });
 
-  initPeer();
+  // Also destroy on pagehide (better for mobile)
+  window.addEventListener('pagehide', () => {
+    if (peer && !peer.destroyed) {
+      try { peer.destroy(); } catch (_) {}
+    }
+  });
+
+  createPeer();
   updateGridClass();
 })();
